@@ -1,6 +1,15 @@
 # Build artifacts
 build/
+build-vulkan/
 cmake-build*/
+
+# Keep the pre-built Vulkan binaries needed for transcription
+!build-vulkan/bin/Release/whisper-cli.exe
+!build-vulkan/bin/Release/whisper.dll
+!build-vulkan/bin/Release/ggml.dll
+!build-vulkan/bin/Release/ggml-base.dll
+!build-vulkan/bin/Release/ggml-cpu.dll
+!build-vulkan/bin/Release/ggml-vulkan.dll
 
 # CMake (install separately or via package manager)
 cmake/

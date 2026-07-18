@@ -1,0 +1,266 @@
+# Transcribe audio/video from a URL or local file using whisper.cpp
+# Usage:
+#   .\transcribe-url.ps1 "https://youtube.com/watch?v=..."
+#   .\transcribe-url.ps1 "C:\Downloads\lecture.mp4"
+#   .\transcribe-url.ps1 ".\samples\jfk.wav" -Model ggml-large-v3-q5_0.bin -Language en -Threads 8
+
+param(
+    [Parameter(Mandatory=$true, Position=0)]
+    [string]$Source,
+
+    [string]$Model = "ggml-medium.bin",
+    [string]$Language = "",
+    [int]$Threads = 4,
+    [switch]$Srt
+)
+
+$ErrorActionPreference = "Stop"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+function Test-Command {
+    param([string]$Name)
+    $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
+}
+
+function Ensure-Dependency {
+    param(
+        [string]$Name,
+        [string]$CheckCmd,
+        [scriptblock]$Install
+    )
+
+    if (Test-Command $CheckCmd) {
+        Write-Host "  $Name found." -ForegroundColor Green
+        return
+    }
+
+    Write-Host "  $Name not found. Installing..." -ForegroundColor Yellow
+    try {
+        & $Install
+    }
+    catch {
+        Write-Host "  Failed to install $Name : $_" -ForegroundColor Red
+        Write-Host "  Please install $Name manually and re-run this script." -ForegroundColor Red
+        exit 1
+    }
+
+    # Re-check
+    if (-not (Test-Command $CheckCmd)) {
+        Write-Host "  $Name installation succeeded but command still not on PATH." -ForegroundColor Red
+        Write-Host "  You may need to restart your terminal." -ForegroundColor Red
+        exit 1
+    }
+    Write-Host "  $Name installed successfully." -ForegroundColor Green
+}
+
+function Sanitize-Filename {
+    param([string]$Name)
+    $Name -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
+}
+
+# ---------------------------------------------------------------------------
+# 1. Detect input type
+# ---------------------------------------------------------------------------
+
+$IsLocalFile = Test-Path -LiteralPath $Source -PathType Leaf
+
+# ---------------------------------------------------------------------------
+# 2. Check / install dependencies
+# ---------------------------------------------------------------------------
+
+Write-Host ""
+Write-Host "Whisper.cpp Transcriber" -ForegroundColor Cyan
+Write-Host "=======================" -ForegroundColor Cyan
+Write-Host ""
+if ($IsLocalFile) {
+    Write-Host "Input: local file  $Source" -ForegroundColor DarkGray
+} else {
+    Write-Host "Input: URL  $Source" -ForegroundColor DarkGray
+}
+Write-Host ""
+Write-Host "Checking dependencies..." -ForegroundColor Cyan
+
+if (-not $IsLocalFile) {
+    Ensure-Dependency -Name "yt-dlp" -CheckCmd "yt-dlp" -Install {
+        pip install yt-dlp
+    }
+}
+
+Ensure-Dependency -Name "ffmpeg" -CheckCmd "ffmpeg" -Install {
+    choco install ffmpeg -y
+}
+
+$WhisperCli = Join-Path $ScriptDir "build-vulkan\bin\Release\whisper-cli.exe"
+if (-not (Test-Path $WhisperCli)) {
+    Write-Host "  whisper-cli.exe not found at $WhisperCli" -ForegroundColor Red
+    Write-Host "  Build whisper.cpp with Vulkan support first (see README.md)." -ForegroundColor Red
+    exit 1
+}
+Write-Host "  whisper-cli found." -ForegroundColor Green
+
+# ---------------------------------------------------------------------------
+# 3. Prepare audio (download or convert)
+# ---------------------------------------------------------------------------
+
+$TempDir = Join-Path ([System.IO.Path]::GetTempPath()) "whisper_url_$([System.IO.Path]::GetRandomFileName())"
+New-Item -ItemType Directory -Path $TempDir -Force | Out-Null
+
+try {
+    if ($IsLocalFile) {
+        # -------------------------------------------------------------------
+        # Local file: convert directly with ffmpeg
+        # -------------------------------------------------------------------
+
+        Write-Host ""
+        Write-Host "Converting audio..." -ForegroundColor Cyan
+
+        $ConvertedWav = Join-Path $TempDir "audio_16k.wav"
+        $FfmpegArgs = @(
+            "-i", (Resolve-Path -LiteralPath $Source).Path,
+            "-ar", "16000",
+            "-ac", "1",
+            "-y",
+            $ConvertedWav
+        )
+        Write-Host "  Running: ffmpeg $($FfmpegArgs -join ' ')" -ForegroundColor DarkGray
+        & ffmpeg @FfmpegArgs 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ffmpeg conversion failed with exit code $LASTEXITCODE" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  Converted to 16kHz mono WAV." -ForegroundColor Green
+
+        # Output name from input filename
+        $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($Source)
+        $SafeTitle = Sanitize-Filename -Name $BaseName
+    }
+    else {
+        # -------------------------------------------------------------------
+        # URL: download with yt-dlp, then convert
+        # -------------------------------------------------------------------
+
+        Write-Host ""
+        Write-Host "Downloading audio..." -ForegroundColor Cyan
+
+        $TempAudio = Join-Path $TempDir "audio"
+        $DlpArgs = @(
+            "-x",
+            "--audio-format", "wav",
+            "--no-playlist",
+            "--restrict-filenames",
+            "-o", $TempAudio + ".%(ext)s",
+            $Source
+        )
+        Write-Host "  Running: yt-dlp $($DlpArgs -join ' ')" -ForegroundColor DarkGray
+        & yt-dlp @DlpArgs
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  yt-dlp failed with exit code $LASTEXITCODE" -ForegroundColor Red
+            exit 1
+        }
+
+        # Find the downloaded file
+        $DownloadedFile = Get-ChildItem -Path $TempDir -Filter "audio.*" | Select-Object -First 1
+        if (-not $DownloadedFile) {
+            Write-Host "  yt-dlp did not produce an audio file." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  Downloaded: $($DownloadedFile.Name)" -ForegroundColor Green
+
+        Write-Host ""
+        Write-Host "Converting audio..." -ForegroundColor Cyan
+
+        $ConvertedWav = Join-Path $TempDir "audio_16k.wav"
+        $FfmpegArgs = @(
+            "-i", $DownloadedFile.FullName,
+            "-ar", "16000",
+            "-ac", "1",
+            "-y",
+            $ConvertedWav
+        )
+        Write-Host "  Running: ffmpeg $($FfmpegArgs -join ' ')" -ForegroundColor DarkGray
+        & ffmpeg @FfmpegArgs 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "  ffmpeg conversion failed with exit code $LASTEXITCODE" -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "  Converted to 16kHz mono WAV." -ForegroundColor Green
+
+        # Output name from video title
+        $TitleArgs = @("--print", "title", "--no-playlist", $Source)
+        $VideoTitle = & yt-dlp @TitleArgs 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($VideoTitle)) {
+            $VideoTitle = "transcription"
+        }
+        $SafeTitle = Sanitize-Filename -Name $VideoTitle
+    }
+
+    if ($SafeTitle.Length -gt 80) {
+        $SafeTitle = $SafeTitle.Substring(0, 80)
+    }
+
+    # -----------------------------------------------------------------------
+    # 4. Transcribe with whisper-cli
+    # -----------------------------------------------------------------------
+
+    Write-Host ""
+    Write-Host "Transcribing..." -ForegroundColor Cyan
+
+    $OutputTxt = Join-Path $ScriptDir "$SafeTitle.txt"
+
+    $WhisperArgs = @(
+        "-m", (Join-Path $ScriptDir $Model),
+        "-t", $Threads.ToString(),
+        "-f", $ConvertedWav,
+        "--output-txt"
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Language)) {
+        $WhisperArgs += "--language"
+        $WhisperArgs += $Language
+    }
+    if ($Srt) {
+        $WhisperArgs += "--output-srt"
+    }
+
+    Write-Host "  Model: $Model | Threads: $Threads | Language: $(if ($Language) { $Language } else { 'auto-detect' })" -ForegroundColor DarkGray
+    & $WhisperCli @WhisperArgs
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  whisper-cli failed with exit code $LASTEXITCODE" -ForegroundColor Red
+        exit 1
+    }
+
+    # whisper-cli writes output next to the input wav — move it to project root
+    $WhisperOutput = Join-Path $TempDir "audio_16k.txt"
+    if (Test-Path $WhisperOutput) {
+        Move-Item -Path $WhisperOutput -Destination $OutputTxt -Force
+    }
+    else {
+        Write-Host "  Warning: whisper output file not found at $WhisperOutput" -ForegroundColor Yellow
+    }
+
+    if ($Srt) {
+        $SrtOutput = Join-Path $TempDir "audio_16k.srt"
+        $SrtDest = Join-Path $ScriptDir "$SafeTitle.srt"
+        if (Test-Path $SrtOutput) {
+            Move-Item -Path $SrtOutput -Destination $SrtDest -Force
+        }
+    }
+
+    Write-Host ""
+    Write-Host "Done!" -ForegroundColor Green
+    Write-Host "  Transcript saved to: $OutputTxt" -ForegroundColor Cyan
+    if ($Srt) {
+        Write-Host "  SRT saved to: $SafeTitle.srt" -ForegroundColor Cyan
+    }
+}
+finally {
+    # -----------------------------------------------------------------------
+    # 5. Clean up temp files
+    # -----------------------------------------------------------------------
+    if (Test-Path $TempDir) {
+        Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
