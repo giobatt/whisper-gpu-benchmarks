@@ -37,3 +37,6 @@ Thumbs.db
 
 # Node.js (not relevant to this project)
 node_modules/
+
+# Downloaded tools (ffmpeg etc.)
+tools/

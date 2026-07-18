@@ -15,7 +15,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ScriptDir = if ($MyInvocation.MyCommand.Path) {
+    Split-Path -Parent $MyInvocation.MyCommand.Path
+} else {
+    $PWD.Path
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -26,7 +30,7 @@ function Test-Command {
     $null -ne (Get-Command $Name -ErrorAction SilentlyContinue)
 }
 
-function Ensure-Dependency {
+function Assert-Dependency {
     param(
         [string]$Name,
         [string]$CheckCmd,
@@ -57,7 +61,7 @@ function Ensure-Dependency {
     Write-Host "  $Name installed successfully." -ForegroundColor Green
 }
 
-function Sanitize-Filename {
+function ConvertTo-SafeFilename {
     param([string]$Name)
     $Name -replace '[\\/:*?"<>|]', '_' -replace '\s+', '_'
 }
@@ -84,14 +88,38 @@ if ($IsLocalFile) {
 Write-Host ""
 Write-Host "Checking dependencies..." -ForegroundColor Cyan
 
+# Add local tools to PATH if they exist
+$LocalFfmpeg = Join-Path $ScriptDir "tools\ffmpeg\ffmpeg.exe"
+if (Test-Path $LocalFfmpeg) {
+    $env:PATH = "$(Split-Path $LocalFfmpeg);$env:PATH"
+}
+
 if (-not $IsLocalFile) {
-    Ensure-Dependency -Name "yt-dlp" -CheckCmd "yt-dlp" -Install {
+    Assert-Dependency -Name "yt-dlp" -CheckCmd "yt-dlp" -Install {
         pip install yt-dlp
     }
 }
 
-Ensure-Dependency -Name "ffmpeg" -CheckCmd "ffmpeg" -Install {
-    choco install ffmpeg -y
+Assert-Dependency -Name "ffmpeg" -CheckCmd "ffmpeg" -Install {
+    $ToolsDir = Join-Path $ScriptDir "tools"
+    $FfmpegDir = Join-Path $ToolsDir "ffmpeg"
+    if (-not (Test-Path $FfmpegDir)) {
+        New-Item -ItemType Directory -Path $FfmpegDir -Force | Out-Null
+    }
+    $ZipPath = Join-Path $ToolsDir "ffmpeg.zip"
+    Write-Host "  Downloading ffmpeg..." -ForegroundColor Yellow
+    Invoke-WebRequest -Uri "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip" -OutFile $ZipPath -UseBasicParsing
+    Write-Host "  Extracting..." -ForegroundColor Yellow
+    Expand-Archive -Path $ZipPath -DestinationPath $ToolsDir -Force
+    $ExtractedDir = Get-ChildItem -Path $ToolsDir -Directory | Where-Object { $_.Name -like "ffmpeg-*" } | Select-Object -First 1
+    if ($ExtractedDir) {
+        $BinDir = Join-Path $ExtractedDir.FullName "bin"
+        Copy-Item -Path (Join-Path $BinDir "ffmpeg.exe") -Destination $FfmpegDir -Force
+        Copy-Item -Path (Join-Path $BinDir "ffprobe.exe") -Destination $FfmpegDir -Force
+        Remove-Item -Path $ExtractedDir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item -Path $ZipPath -Force -ErrorAction SilentlyContinue
+    $env:PATH = "$FfmpegDir;$env:PATH"
 }
 
 $WhisperCli = Join-Path $ScriptDir "build-vulkan\bin\Release\whisper-cli.exe"
@@ -101,6 +129,14 @@ if (-not (Test-Path $WhisperCli)) {
     exit 1
 }
 Write-Host "  whisper-cli found." -ForegroundColor Green
+
+$ModelPath = Join-Path $ScriptDir $Model
+if (-not (Test-Path $ModelPath)) {
+    Write-Host "  Model '$Model' not found at $ModelPath" -ForegroundColor Red
+    Write-Host "  Run .\download-models.ps1 or download from https://huggingface.co/ggerganov/whisper.cpp" -ForegroundColor Red
+    exit 1
+}
+Write-Host "  Model: $Model" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # 3. Prepare audio (download or convert)
@@ -127,16 +163,18 @@ try {
             $ConvertedWav
         )
         Write-Host "  Running: ffmpeg $($FfmpegArgs -join ' ')" -ForegroundColor DarkGray
-        & ffmpeg @FfmpegArgs 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  ffmpeg conversion failed with exit code $LASTEXITCODE" -ForegroundColor Red
+        $FfmpegProc = Start-Process -FilePath "ffmpeg" -ArgumentList $FfmpegArgs -NoNewWindow -PassThru -Wait -RedirectStandardError "$TempDir\ffmpeg_err.txt"
+        $FfmpegErrors = Get-Content "$TempDir\ffmpeg_err.txt" -ErrorAction SilentlyContinue
+        if ($FfmpegProc.ExitCode -ne 0) {
+            Write-Host "  ffmpeg conversion failed with exit code $($FfmpegProc.ExitCode)" -ForegroundColor Red
+            $FfmpegErrors | Where-Object { $_ -match "error|Error|ERROR" } | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
             exit 1
         }
         Write-Host "  Converted to 16kHz mono WAV." -ForegroundColor Green
 
         # Output name from input filename
         $BaseName = [System.IO.Path]::GetFileNameWithoutExtension($Source)
-        $SafeTitle = Sanitize-Filename -Name $BaseName
+        $SafeTitle = ConvertTo-SafeFilename -Name $BaseName
     }
     else {
         # -------------------------------------------------------------------
@@ -182,9 +220,11 @@ try {
             $ConvertedWav
         )
         Write-Host "  Running: ffmpeg $($FfmpegArgs -join ' ')" -ForegroundColor DarkGray
-        & ffmpeg @FfmpegArgs 2>$null
-        if ($LASTEXITCODE -ne 0) {
-            Write-Host "  ffmpeg conversion failed with exit code $LASTEXITCODE" -ForegroundColor Red
+        $FfmpegProc = Start-Process -FilePath "ffmpeg" -ArgumentList $FfmpegArgs -NoNewWindow -PassThru -Wait -RedirectStandardError "$TempDir\ffmpeg_err.txt"
+        $FfmpegErrors = Get-Content "$TempDir\ffmpeg_err.txt" -ErrorAction SilentlyContinue
+        if ($FfmpegProc.ExitCode -ne 0) {
+            Write-Host "  ffmpeg conversion failed with exit code $($FfmpegProc.ExitCode)" -ForegroundColor Red
+            $FfmpegErrors | Where-Object { $_ -match "error|Error|ERROR" } | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
             exit 1
         }
         Write-Host "  Converted to 16kHz mono WAV." -ForegroundColor Green
@@ -195,7 +235,7 @@ try {
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($VideoTitle)) {
             $VideoTitle = "transcription"
         }
-        $SafeTitle = Sanitize-Filename -Name $VideoTitle
+        $SafeTitle = ConvertTo-SafeFilename -Name $VideoTitle
     }
 
     if ($SafeTitle.Length -gt 80) {
@@ -212,7 +252,7 @@ try {
     $OutputTxt = Join-Path $ScriptDir "$SafeTitle.txt"
 
     $WhisperArgs = @(
-        "-m", (Join-Path $ScriptDir $Model),
+        "-m", $ModelPath,
         "-t", $Threads.ToString(),
         "-f", $ConvertedWav,
         "--output-txt"
@@ -233,7 +273,7 @@ try {
     }
 
     # whisper-cli writes output next to the input wav — move it to project root
-    $WhisperOutput = Join-Path $TempDir "audio_16k.txt"
+    $WhisperOutput = Join-Path $TempDir "audio_16k.wav.txt"
     if (Test-Path $WhisperOutput) {
         Move-Item -Path $WhisperOutput -Destination $OutputTxt -Force
     }
@@ -242,7 +282,7 @@ try {
     }
 
     if ($Srt) {
-        $SrtOutput = Join-Path $TempDir "audio_16k.srt"
+        $SrtOutput = Join-Path $TempDir "audio_16k.wav.srt"
         $SrtDest = Join-Path $ScriptDir "$SafeTitle.srt"
         if (Test-Path $SrtOutput) {
             Move-Item -Path $SrtOutput -Destination $SrtDest -Force
