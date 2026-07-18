@@ -95,20 +95,69 @@ Both CPU and Vulkan produce **identical output** on the JFK sample:
 country can do for you, ask what you can do for your country.
 ```
 
-## Reproduction
+## Quick Start
+
+The repo includes pre-built Vulkan GPU binaries. Just download models and run:
+
+```powershell
+# 1. Download models
+.\download-models.ps1
+
+# 2. Transcribe
+.\build-vulkan\bin\Release\whisper-cli.exe -m ggml-medium.bin -t 4 -f samples\jfk.wav
+```
+
+### Available Models
+
+| Model | Size | Speed | Best For |
+|-------|------|-------|----------|
+| `ggml-base.bin` | 147 MB | 1.15s | Quick testing |
+| `ggml-medium.bin` | 1.5 GB | 6.4s | Good balance |
+| `ggml-large-v3-q5_0.bin` | 1 GB | 12.7s | Best quality |
+
+### CLI Options
+
+```powershell
+.\build-vulkan\bin\Release\whisper-cli.exe [options]
+  -m <model>     Model path (required)
+  -f <wav>       Audio file (required)
+  -t <threads>   CPU threads (default: 4, doesn't affect GPU encode)
+  --output-srt   Output SRT subtitles
+  --output-txt   Output plain text
+  --language <l> Force language (e.g. "en", "it")
+  --translate    Translate to English
+```
+
+### Examples
+
+```powershell
+# English transcription with SRT output
+.\build-vulkan\bin\Release\whisper-cli.exe -m ggml-medium.bin -t 4 --language en --output-srt -f samples\jfk.wav
+
+# Translate Italian audio to English
+.\build-vulkan\bin\Release\whisper-cli.exe -m ggml-medium.bin -t 4 --translate --output-txt -f italian_audio.wav
+
+# Fast base model for testing
+.\build-vulkan\bin\Release\whisper-cli.exe -m ggml-base.bin -t 4 -f samples\jfk.wav
+```
+
+## Building from Source
+
+If you want to build yourself instead of using the pre-built binaries:
 
 ### Prerequisites
 
 - Windows with Intel Iris Xe Graphics
 - Visual Studio 2022 Build Tools (MSVC)
-- Vulkan SDK (LunarG)
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) (LunarG)
+- [CMake](https://cmake.org/download/) 3.21+
 
-### Build (Vulkan)
+### Build
 
 ```powershell
 # Clone whisper.cpp
-git clone https://github.com/ggerganov/whisper.cpp.git
-cd whisper.cpp
+git clone https://github.com/ggerganov/whisper.cpp.git whisper-cpp-source
+cd whisper-cpp-source
 
 # Set Vulkan SDK path
 $env:VULKAN_SDK = "C:\VulkanSDK\1.4.350.0"
@@ -116,16 +165,6 @@ $env:VULKAN_SDK = "C:\VulkanSDK\1.4.350.0"
 # Configure and build
 cmake -B build-vulkan -G "Visual Studio 17 2022" -A x64 -DGGML_VULKAN=ON
 cmake --build build-vulkan --config Release -j
-```
-
-### Run
-
-```powershell
-# Download a model
-# (ggml-base.bin, ggml-medium.bin, etc.)
-
-# Transcribe
-.\build-vulkan\bin\Release\whisper-cli.exe -m ggml-medium.bin -t 4 -f your_audio.wav
 ```
 
 ## Why Vulkan is Fast on Iris Xe
@@ -136,14 +175,14 @@ CPU-only inference with AVX512 is also fast, but the GPU's parallel execution un
 
 ## Files
 
-- `build-vulkan/` - Vulkan build output (contains `whisper-cli.exe`)
-- `whisper-cpp-source/` - Cloned whisper.cpp v1.9.1
-- `cmake/` - Portable CMake 3.30.0
-- `ggml-base.bin` - Base model (147 MB)
-- `ggml-medium.bin` - Medium model (1.5 GB)
-- `ggml-large-v3-q5_0.bin` - Large model quantized (1 GB)
-- `samples/jfk.wav` - JFK speech sample (11 sec)
-- `youtube_audio.wav` - Test audio (music)
+- `build-vulkan/bin/Release/whisper-cli.exe` — Pre-built Vulkan GPU binary
+- `build-vulkan/bin/Release/ggml-vulkan.dll` — Vulkan compute backend (46 MB)
+- `build-vulkan/bin/Release/*.dll` — Required runtime DLLs
+- `download-models.ps1` — Downloads models from Hugging Face
+- `samples/jfk.wav` — JFK speech sample (11 sec)
+- `README.md` — This file
+
+Models are excluded from the repo (too large). Run `.\download-models.ps1` to fetch them.
 
 ## License
 
