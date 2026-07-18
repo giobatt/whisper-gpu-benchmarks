@@ -1,6 +1,5 @@
 # Build artifacts
 build/
-build-vulkan/
 cmake-build*/
 
 # CMake (install separately or via package manager)
