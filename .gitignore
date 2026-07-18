@@ -31,6 +31,10 @@ ggml-large-v3-q5_0.bin
 # Large test audio (re-download with yt-dlp if needed)
 youtube_audio.wav
 
+# Transcription output
+*.txt
+!README.md
+
 # OS files
 Thumbs.db
 .DS_Store
