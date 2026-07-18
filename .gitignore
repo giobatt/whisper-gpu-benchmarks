@@ -1,0 +1,31 @@
+# Build artifacts
+build/
+build-vulkan/
+cmake-build*/
+
+# CMake (install separately or via package manager)
+cmake/
+
+# whisper.cpp source - clone it fresh:
+#   git clone https://github.com/ggerganov/whisper.cpp.git whisper-cpp-source
+whisper-cpp-source/
+
+# OpenCode agents config (project-specific, not needed for reproduction)
+.agents/
+
+# Models - too large for git, download separately
+# Use download-models.ps1 or download manually from:
+#   https://huggingface.co/ggerganov/whisper.cpp/tree/main
+ggml-base.bin
+ggml-medium.bin
+ggml-large-v3-q5_0.bin
+
+# Large test audio (re-download with yt-dlp if needed)
+youtube_audio.wav
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Node.js (not relevant to this project)
+node_modules/
