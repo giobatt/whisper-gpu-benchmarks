@@ -72,6 +72,22 @@ function ConvertTo-SafeFilename {
 
 $IsLocalFile = Test-Path -LiteralPath $Source -PathType Leaf
 
+# Clean URL: strip playlist params that confuse yt-dlp
+if (-not $IsLocalFile -and $Source -match '\?') {
+    $BaseUrl = $Source.Split('?')[0]
+    $QueryParams = ($Source.Split('?')[1]) -split '&' | Where-Object { $_ -notmatch '^(list|index|start_radio)=' }
+    if ($QueryParams) {
+        $Source = $BaseUrl + '?' + ($QueryParams -join '&')
+    } else {
+        $Source = $BaseUrl
+    }
+}
+
+# YouTube: extract video ID to avoid playlist & param issues
+if (-not $IsLocalFile -and $Source -match '(youtube\.com/watch\?.*v=|youtu\.be/)([a-zA-Z0-9_-]{11})') {
+    $Source = 'https://www.youtube.com/watch?v=' + $Matches[2]
+}
+
 # ---------------------------------------------------------------------------
 # 2. Check / install dependencies
 # ---------------------------------------------------------------------------
@@ -92,6 +108,16 @@ Write-Host "Checking dependencies..." -ForegroundColor Cyan
 $LocalFfmpeg = Join-Path $ScriptDir "tools\ffmpeg\ffmpeg.exe"
 if (Test-Path $LocalFfmpeg) {
     $env:PATH = "$(Split-Path $LocalFfmpeg);$env:PATH"
+}
+
+# Add Python Scripts to PATH for yt-dlp
+$AppData = [System.Environment]::GetFolderPath('ApplicationData')
+$PythonScriptsDir = Get-ChildItem -Path (Join-Path $AppData "Python") -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object { Join-Path $_.FullName "Scripts" } |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+if ($PythonScriptsDir) {
+    $env:PATH = "$PythonScriptsDir;$env:PATH"
 }
 
 if (-not $IsLocalFile) {
@@ -190,7 +216,8 @@ try {
             "--audio-format", "wav",
             "--no-playlist",
             "--restrict-filenames",
-            "-o", $TempAudio + ".%(ext)s",
+            "--ffmpeg-location", (Split-Path $LocalFfmpeg),
+            "-o", ($TempAudio + ".%(ext)s"),
             $Source
         )
         Write-Host "  Running: yt-dlp $($DlpArgs -join ' ')" -ForegroundColor DarkGray
